@@ -345,6 +345,24 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 			reply_text += response.text
 		else:
 			reply_text += str(response)
+
+		# 将返回的图片也包装成 Markdown 一并返回
+		image_markdown_parts = []
+		images = getattr(response, "images", []) or []
+		for idx, img in enumerate(images, 1):
+			url = getattr(img, "url", "") or ""
+			if not url:
+				continue
+			# 处理以 // 开头的协议相对链接
+			if url.startswith("//"):
+				url = "https:" + url
+			alt = getattr(img, "alt", "") or getattr(img, "title", "") or f"image-{idx}"
+			alt = alt.replace("\n", " ").strip()
+			image_markdown_parts.append(f"![{alt}]({url})")
+
+		if image_markdown_parts:
+			reply_text += "\n\n" + "\n\n".join(image_markdown_parts)
+
 		reply_text = reply_text.replace("&lt;", "<").replace("\\<", "<").replace("\\_", "_").replace("\\>", ">")
 		reply_text = correct_markdown(reply_text)
 
