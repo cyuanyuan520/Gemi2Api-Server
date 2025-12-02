@@ -50,6 +50,9 @@ IMAGE_SUBDIR = "images"
 IMAGE_DIR = os.path.join(STATIC_ROOT_PATH, IMAGE_SUBDIR)
 os.makedirs(IMAGE_DIR, exist_ok=True)
 
+# Public base URL for building absolute image URLs, e.g. "http://146.235.205.249:8000"
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+
 # Serve static files (including saved images) under /static
 app.mount("/static", StaticFiles(directory=STATIC_ROOT_PATH), name="static")
 
@@ -313,7 +316,7 @@ async def get_gemini_client():
 
 
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request: ChatCompletionRequest, api_key: str = Depends(verify_api_key)):
+async def create_chat_completion(body: ChatCompletionRequest, api_key: str = Depends(verify_api_key), request: Request = None):
 	try:
 		# 确保客户端已初始化
 		global gemini_client
@@ -323,12 +326,12 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 			logger.info("Gemini client initialized successfully")
 
 		# 转换消息为对话格式
-		conversation, temp_files = prepare_conversation(request.messages)
+		conversation, temp_files = prepare_conversation(body.messages)
 		logger.info(f"Prepared conversation: {conversation}")
 		logger.info(f"Temp files: {temp_files}")
 
 		# 获取适当的模型
-		model = map_model_name(request.model)
+		model = map_model_name(body.model)
 		logger.info(f"Using model: {model}")
 
 		# 生成响应
@@ -377,10 +380,20 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 
 			url_path = "/static/" + static_rel_path.replace(os.sep, "/")
 
+			# 构造绝对 URL，优先使用环境变量，其次使用请求的 base_url
+			if PUBLIC_BASE_URL:
+				base_url = PUBLIC_BASE_URL
+			elif request is not None:
+				base_url = str(request.base_url).rstrip("/")
+			else:
+				base_url = ""
+
+			full_url = f"{base_url}{url_path}" if base_url else url_path
+
 			alt = getattr(img, "alt", "") or getattr(img, "title", "") or f"image-{idx}"
 			alt = alt.replace("\n", " ").strip()
 
-			image_markdown_parts.append(f"![{alt}]({url_path})")
+			image_markdown_parts.append(f"![{alt}]({full_url})")
 
 		if image_markdown_parts:
 			reply_text += "\n\n" + "\n\n".join(image_markdown_parts)
@@ -399,7 +412,7 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 		created_time = int(time.time())
 
 		# 检查客户端是否请求流式响应
-		if request.stream:
+		if body.stream:
 			# 实现流式响应
 			async def generate_stream():
 				# 创建 SSE 格式的流式响应
@@ -408,7 +421,7 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 					"id": completion_id,
 					"object": "chat.completion.chunk",
 					"created": created_time,
-					"model": request.model,
+					"model": body.model,
 					"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
 				}
 				yield f"data: {json.dumps(data)}\n\n"
@@ -419,7 +432,7 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 						"id": completion_id,
 						"object": "chat.completion.chunk",
 						"created": created_time,
-						"model": request.model,
+						"model": body.model,
 						"choices": [{"index": 0, "delta": {"content": char}, "finish_reason": None}],
 					}
 					yield f"data: {json.dumps(data)}\n\n"
@@ -431,7 +444,7 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 					"id": completion_id,
 					"object": "chat.completion.chunk",
 					"created": created_time,
-					"model": request.model,
+					"model": body.model,
 					"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
 				}
 				yield f"data: {json.dumps(data)}\n\n"
@@ -444,7 +457,7 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 				"id": completion_id,
 				"object": "chat.completion",
 				"created": created_time,
-				"model": request.model,
+				"model": body.model,
 				"choices": [{"index": 0, "message": {"role": "assistant", "content": reply_text}, "finish_reason": "stop"}],
 				"usage": {
 					"prompt_tokens": len(conversation.split()),
