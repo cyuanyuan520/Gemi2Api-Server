@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Union
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from gemini_webapi import GeminiClient, set_log_level
 from gemini_webapi.constants import Model
 from pydantic import BaseModel
@@ -41,6 +42,16 @@ SECURE_1PSID = os.environ.get("SECURE_1PSID", "")
 SECURE_1PSIDTS = os.environ.get("SECURE_1PSIDTS", "")
 API_KEY = os.environ.get("API_KEY", "")
 ENABLE_THINKING = os.environ.get("ENABLE_THINKING", "false").lower() == "true"
+
+# Static file settings for saved images
+STATIC_ROOT = os.environ.get("STATIC_ROOT", "static")
+STATIC_ROOT_PATH = os.path.abspath(STATIC_ROOT)
+IMAGE_SUBDIR = "images"
+IMAGE_DIR = os.path.join(STATIC_ROOT_PATH, IMAGE_SUBDIR)
+os.makedirs(IMAGE_DIR, exist_ok=True)
+
+# Serve static files (including saved images) under /static
+app.mount("/static", StaticFiles(directory=STATIC_ROOT_PATH), name="static")
 
 # Print debug info at startup
 if not SECURE_1PSID or not SECURE_1PSIDTS:
@@ -346,19 +357,30 @@ async def create_chat_completion(request: ChatCompletionRequest, api_key: str = 
 		else:
 			reply_text += str(response)
 
-		# 将返回的图片也包装成 Markdown 一并返回
+		# 将返回的图片下载到本地并以 Markdown 引用静态文件
 		image_markdown_parts = []
 		images = getattr(response, "images", []) or []
 		for idx, img in enumerate(images, 1):
-			url = getattr(img, "url", "") or ""
-			if not url:
+			try:
+				saved_path = await img.save(path=IMAGE_DIR, verbose=False)
+			except Exception as e:
+				logger.warning(f"Failed to save image {idx}: {e}")
 				continue
-			# 处理以 // 开头的协议相对链接
-			if url.startswith("//"):
-				url = "https:" + url
+
+			if not saved_path:
+				continue
+
+			try:
+				static_rel_path = os.path.relpath(saved_path, STATIC_ROOT_PATH)
+			except ValueError:
+				static_rel_path = os.path.join(IMAGE_SUBDIR, os.path.basename(saved_path))
+
+			url_path = "/static/" + static_rel_path.replace(os.sep, "/")
+
 			alt = getattr(img, "alt", "") or getattr(img, "title", "") or f"image-{idx}"
 			alt = alt.replace("\n", " ").strip()
-			image_markdown_parts.append(f"![{alt}]({url})")
+
+			image_markdown_parts.append(f"![{alt}]({url_path})")
 
 		if image_markdown_parts:
 			reply_text += "\n\n" + "\n\n".join(image_markdown_parts)
